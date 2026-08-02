@@ -49,6 +49,14 @@
 
 ## 🚀 Installation
 
+### Quick Install (Pre-compiled Linux Binary)
+
+```bash
+curl -fsSL -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/Praveensenpai/subsink/main/install.sh | bash
+```
+
+### Build from Source
+
 ```bash
 git clone https://github.com/Praveensenpai/subsink.git
 cd subsink
