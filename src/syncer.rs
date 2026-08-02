@@ -18,7 +18,9 @@ impl SubtitleSyncer {
 
         // 1. Run ALASS silently
         let mut cmd = Command::new(&alass_bin);
-        cmd.arg(video_path)
+        cmd.arg("-g")
+            .arg("-l")
+            .arg(video_path)
             .arg(raw_sub_path)
             .arg(output_sub_path)
             .stdout(Stdio::piped())
@@ -38,6 +40,8 @@ impl SubtitleSyncer {
         // 2. Fallback check for alass-cli
         let mut cmd_cli = Command::new("alass-cli");
         cmd_cli
+            .arg("-g")
+            .arg("-l")
             .arg(video_path)
             .arg(raw_sub_path)
             .arg(output_sub_path)

@@ -1,6 +1,6 @@
 [package]
 name = "subsink"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A minimalist TUI tool to download & auto-sync Japanese subtitles for raw anime immersion"
 
