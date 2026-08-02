@@ -14,6 +14,43 @@ echo -e "${PURPLE}⛩️  Installing subsink (Japanese Anime SubSyncer)...${NC}\
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 
+# Check Prerequisites
+echo -e "${BLUE}🔍 Checking dependencies...${NC}"
+
+# 1. Check ffmpeg
+if command -v ffmpeg >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✔ ffmpeg is installed${NC}"
+else
+    echo -e "  ${YELLOW}⚠️  ffmpeg is not installed (required for audio extraction).${NC}"
+    echo -e "     Install via your package manager (e.g. 'sudo pacman -S ffmpeg' or 'sudo apt install ffmpeg')."
+fi
+
+# 2. Check ALASS
+if command -v alass >/dev/null 2>&1 || command -v alass-cli >/dev/null 2>&1 || [ -f "$HOME/.cargo/bin/alass-cli" ]; then
+    echo -e "  ${GREEN}✔ ALASS is installed${NC}\n"
+else
+    echo -e "  ${YELLOW}⚠️  ALASS (alass-cli) is not installed (required for subtitle sync).${NC}"
+    if command -v cargo >/dev/null 2>&1; then
+        REPLY="y"
+        if [ -c /dev/tty ]; then
+            read -p "   Would you like to install alass-cli now via Cargo? [Y/n] " -r REPLY < /dev/tty
+        fi
+        if [[ ! "$REPLY" =~ ^[Nn]$ ]]; then
+            echo -e "   ${BLUE}📦 Installing alass-cli via Cargo...${NC}"
+            if cargo install alass-cli; then
+                echo -e "   ${GREEN}✔ alass-cli installed successfully!${NC}\n"
+            else
+                echo -e "   ${RED}❌ Failed to install alass-cli via Cargo.${NC}\n"
+            fi
+        else
+            echo -e "   Skipping alass-cli installation.\n"
+        fi
+    else
+        echo -e "  ${RED}❌ Rust/Cargo is not installed.${NC}"
+        echo -e "     Install Rust (https://rustup.rs) then run: ${CYAN}cargo install alass-cli${NC}\n"
+    fi
+fi
+
 REPO="Praveensenpai/subsink"
 RELEASE_URL="https://github.com/${REPO}/releases/latest/download/subsink-linux-x86_64.tar.gz"
 
