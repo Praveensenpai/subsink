@@ -7,6 +7,7 @@ use anyhow::Result;
 use inquire::Autocomplete;
 use inquire::CustomUserError;
 use inquire::{Select, Text};
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -175,6 +176,8 @@ fn select_video_file() -> Result<PathBuf> {
         return Ok(PathBuf::from(custom_path_str));
     }
 
+    files.sort_by(|left, right| natural_path_cmp(left, right));
+
     let file_display_names: Vec<String> = files
         .iter()
         .map(|p| {
@@ -195,4 +198,81 @@ fn select_video_file() -> Result<PathBuf> {
     }).unwrap_or(0);
 
     Ok(files[selected_index].clone())
+}
+
+/// Compares paths naturally, so numbered episodes sort as 2, 3, 10 rather
+/// than 10, 2, 3.
+fn natural_path_cmp(left: &Path, right: &Path) -> Ordering {
+    natural_cmp(&left.to_string_lossy(), &right.to_string_lossy())
+}
+
+fn natural_cmp(left: &str, right: &str) -> Ordering {
+    let left_bytes = left.as_bytes();
+    let right_bytes = right.as_bytes();
+    let (mut left_index, mut right_index) = (0, 0);
+
+    while left_index < left_bytes.len() && right_index < right_bytes.len() {
+        let left_is_digit = left_bytes[left_index].is_ascii_digit();
+        let right_is_digit = right_bytes[right_index].is_ascii_digit();
+
+        if left_is_digit && right_is_digit {
+            let left_start = left_index;
+            let right_start = right_index;
+
+            while left_index < left_bytes.len() && left_bytes[left_index].is_ascii_digit() {
+                left_index += 1;
+            }
+            while right_index < right_bytes.len() && right_bytes[right_index].is_ascii_digit() {
+                right_index += 1;
+            }
+
+            let left_number = &left_bytes[left_start..left_index];
+            let right_number = &right_bytes[right_start..right_index];
+            let left_significant = left_number
+                .iter()
+                .position(|digit| *digit != b'0')
+                .unwrap_or(left_number.len() - 1);
+            let right_significant = right_number
+                .iter()
+                .position(|digit| *digit != b'0')
+                .unwrap_or(right_number.len() - 1);
+            let left_number = &left_number[left_significant..];
+            let right_number = &right_number[right_significant..];
+
+            match left_number.len().cmp(&right_number.len()) {
+                Ordering::Equal => match left_number.cmp(right_number) {
+                    Ordering::Equal => {}
+                    order => return order,
+                },
+                order => return order,
+            }
+        } else {
+            let left_byte = left_bytes[left_index].to_ascii_lowercase();
+            let right_byte = right_bytes[right_index].to_ascii_lowercase();
+
+            match left_byte.cmp(&right_byte) {
+                Ordering::Equal => {
+                    left_index += 1;
+                    right_index += 1;
+                }
+                order => return order,
+            }
+        }
+    }
+
+    left_bytes.len().cmp(&right_bytes.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::natural_cmp;
+
+    #[test]
+    fn sorts_episode_numbers_naturally() {
+        let mut episodes = vec!["episode 10.mkv", "episode 02.mkv", "episode 3.mkv"];
+
+        episodes.sort_by(|left, right| natural_cmp(left, right));
+
+        assert_eq!(episodes, vec!["episode 02.mkv", "episode 3.mkv", "episode 10.mkv"]);
+    }
 }
