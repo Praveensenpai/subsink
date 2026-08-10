@@ -3,7 +3,7 @@ mod provider;
 mod syncer;
 mod ui;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use inquire::Autocomplete;
 use inquire::CustomUserError;
 use inquire::{Select, Text};
@@ -42,6 +42,18 @@ impl Autocomplete for JimakuAutocompleter {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    match parse_cli_args(&std::env::args().skip(1).collect::<Vec<_>>())? {
+        CliAction::Run => {}
+        CliAction::Help => {
+            print_help();
+            return Ok(());
+        }
+        CliAction::Version => {
+            println!("subsink {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+    }
+
     inquire::set_global_render_config(ui::custom_render_config());
     ui::print_banner();
 
@@ -143,6 +155,28 @@ async fn main() -> Result<()> {
     println!();
 
     Ok(())
+}
+
+enum CliAction {
+    Run,
+    Help,
+    Version,
+}
+
+fn parse_cli_args(args: &[String]) -> Result<CliAction> {
+    match args {
+        [] => Ok(CliAction::Run),
+        [flag] if matches!(flag.as_str(), "-h" | "--help") => Ok(CliAction::Help),
+        [flag] if matches!(flag.as_str(), "-v" | "-V" | "--version") => Ok(CliAction::Version),
+        [argument, ..] => bail!("Unknown argument: {argument}\n\nRun `subsink --help` for usage."),
+    }
+}
+
+fn print_help() {
+    println!(
+        "subsink {}\n\nUsage: subsink [OPTION]\n\nOptions:\n  -h, --help       Show this help message\n  -v, -V, --version  Show the version",
+        env!("CARGO_PKG_VERSION")
+    );
 }
 
 fn select_video_file() -> Result<PathBuf> {
@@ -265,7 +299,20 @@ fn natural_cmp(left: &str, right: &str) -> Ordering {
 
 #[cfg(test)]
 mod tests {
-    use super::natural_cmp;
+    use super::{natural_cmp, parse_cli_args, CliAction};
+
+    #[test]
+    fn recognizes_help_and_version_flags() {
+        assert!(matches!(
+            parse_cli_args(&["--help".to_string()]).unwrap(),
+            CliAction::Help
+        ));
+        assert!(matches!(
+            parse_cli_args(&["-v".to_string()]).unwrap(),
+            CliAction::Version
+        ));
+        assert!(parse_cli_args(&["--unknown".to_string()]).is_err());
+    }
 
     #[test]
     fn sorts_episode_numbers_naturally() {
