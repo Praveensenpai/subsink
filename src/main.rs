@@ -85,9 +85,7 @@ async fn main() -> Result<()> {
         .with_autocomplete(autocompleter)
         .prompt()?;
 
-    let matched_entry = entries.iter().find(|e| {
-        selected_anime_str.starts_with(&e.name) || selected_anime_str.contains(&e.name)
-    });
+    let matched_entry = resolve_entry(&entries, &selected_anime_str);
 
     let entry = match matched_entry {
         Some(e) => e,
@@ -123,34 +121,61 @@ async fn main() -> Result<()> {
 
     let selected_sub = &results[choice_idx];
 
-    // STEP 4: Download, Auto-Sync & Overwrite
-    ui::print_step(4, 4, "Downloading & Aligning Subtitles");
+    // STEP 4: Download & Subtitle Timing Action
+    ui::print_step(4, 4, "Download & Subtitle Timing");
     let download_spinner = ui::create_spinner("Downloading subtitle file...");
     let temp_sub = provider.download_subtitle(selected_sub, parent_dir).await?;
     download_spinner.finish_and_clear();
+    ui::print_success("Subtitle downloaded successfully.");
 
-    let sync_spinner = ui::create_spinner("Aligning subtitle timings with audio via ALASS...");
-    
     let sub_ext = temp_sub.extension().and_then(|s| s.to_str()).unwrap_or("srt");
     let target_sub_filename = format!("{}.ja.{}", video_stem, sub_ext);
     let target_sub_path = parent_dir.join(&target_sub_filename);
 
-    let syncer = syncer::SubtitleSyncer::new();
-    let sync_res = syncer.sync_subtitle(&video_path, &temp_sub, &target_sub_path)?;
-    
+    let timing_options = vec![
+        "⚡ Auto-Sync with ALASS (Audio Voice Alignment)",
+        "⏱️  Manual offset shift (e.g. +500ms, -1.2s)",
+        "📁 Keep original (direct download, no sync)",
+    ];
+
+    let selected_action = Select::new("Choose subtitle timing action:", timing_options).prompt()?;
+
+    if selected_action.starts_with("⚡ Auto-Sync") {
+        let sync_spinner = ui::create_spinner("Aligning subtitle timings with audio via ALASS...");
+        let syncer = syncer::SubtitleSyncer::new();
+        let sync_res = syncer.sync_subtitle(&video_path, &temp_sub, &target_sub_path)?;
+        sync_spinner.finish_and_clear();
+
+        match sync_res {
+            syncer::SyncResult::Success(shift_summary) => {
+                ui::print_success(&format!("ALASS Alignment: {}", shift_summary));
+            }
+            syncer::SyncResult::WarningLargeShift(shift_summary) => {
+                ui::print_warning(&format!("ALASS produced an unusually large shift: {}", shift_summary));
+                ui::print_warning("Preserving downloaded subtitle without sync to prevent corruption.");
+                std::fs::copy(&temp_sub, &target_sub_path)?;
+            }
+            syncer::SyncResult::DirectCopy => {
+                ui::print_info("Subtitle file saved directly alongside raw video.");
+            }
+        }
+    } else if selected_action.starts_with("⏱️") {
+        let offset_str = Text::new("Enter time offset (e.g. +500ms, -1.2s, 800):")
+            .with_default("0")
+            .prompt()?;
+        let offset_ms = syncer::parse_offset_string(&offset_str)?;
+        syncer::apply_manual_offset(&temp_sub, &target_sub_path, offset_ms)?;
+        ui::print_success(&format!("Applied manual offset: {:+}ms", offset_ms));
+    } else {
+        std::fs::copy(&temp_sub, &target_sub_path)?;
+        ui::print_info("Original subtitle saved directly without timing modifications.");
+    }
+
     if temp_sub != target_sub_path {
         let _ = std::fs::remove_file(&temp_sub);
     }
-    
-    sync_spinner.finish_and_clear();
 
-    if let Some(shift_summary) = sync_res {
-        ui::print_success(&format!("ALASS Alignment: {}", shift_summary));
-    } else {
-        ui::print_info("Subtitle file saved directly alongside raw video.");
-    }
-
-    ui::print_success(&format!("Successfully synced and overwritten: {}", target_sub_filename));
+    ui::print_success(&format!("Successfully saved: {}", target_sub_filename));
     ui::print_info(&format!("Saved to: {}", target_sub_path.display()));
     println!();
 
@@ -297,9 +322,53 @@ fn natural_cmp(left: &str, right: &str) -> Ordering {
     left_bytes.len().cmp(&right_bytes.len())
 }
 
+fn resolve_entry<'a>(
+    entries: &'a [provider::CachedJimakuEntry],
+    selected: &str,
+) -> Option<&'a provider::CachedJimakuEntry> {
+    let trimmed = selected.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // 1. Exact match against formatted suggestion "name (japanese_name)" or "name"
+    if let Some(entry) = entries.iter().find(|e| {
+        let formatted = if let Some(ref jp) = e.japanese_name {
+            format!("{} ({})", e.name, jp)
+        } else {
+            e.name.clone()
+        };
+        trimmed == formatted
+    }) {
+        return Some(entry);
+    }
+
+    // 2. Exact match against name, english_name, or japanese_name
+    if let Some(entry) = entries.iter().find(|e| {
+        trimmed.eq_ignore_ascii_case(&e.name)
+            || e.english_name
+                .as_deref()
+                .map_or(false, |eng| trimmed.eq_ignore_ascii_case(eng))
+            || e.japanese_name
+                .as_deref()
+                .map_or(false, |jp| trimmed == jp)
+    }) {
+        return Some(entry);
+    }
+
+    // 3. Fallback: fuzzy filter / highest scoring entry
+    let fuzzy_top = provider::SubtitleProvider::fuzzy_filter_entries(entries, trimmed);
+    if let Some(top) = fuzzy_top.into_iter().next() {
+        return entries.iter().find(|e| e.id == top.id);
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{natural_cmp, parse_cli_args, CliAction};
+    use super::{natural_cmp, parse_cli_args, resolve_entry, CliAction};
+    use crate::provider::CachedJimakuEntry;
 
     #[test]
     fn recognizes_help_and_version_flags() {
@@ -321,5 +390,54 @@ mod tests {
         episodes.sort_by(|left, right| natural_cmp(left, right));
 
         assert_eq!(episodes, vec!["episode 02.mkv", "episode 3.mkv", "episode 10.mkv"]);
+    }
+
+    #[test]
+    fn resolves_exact_autocomplete_entry_with_shared_prefix() {
+        let entries = vec![
+            CachedJimakuEntry {
+                id: 882,
+                name: "Ore wo Suki nano wa Omae dake ka yo".to_string(),
+                english_name: Some("ORESUKI: Are you the only one who loves me?".to_string()),
+                japanese_name: Some("俺を好きなのはお前だけかよ".to_string()),
+            },
+            CachedJimakuEntry {
+                id: 10420,
+                name: "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set".to_string(),
+                english_name: Some("ORESUKI: Are you the only one who loves me?: Our Playball / Our End Run / Our Game".to_string()),
+                japanese_name: Some("俺を好きなのはお前だけかよ～俺たちのゲームセット～".to_string()),
+            },
+        ];
+
+        let selected = "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set (俺を好きなのはお前だけかよ～俺たちのゲームセット～)";
+        let resolved = resolve_entry(&entries, selected);
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().id, 10420);
+        assert_eq!(
+            resolved.unwrap().name,
+            "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set"
+        );
+    }
+
+    #[test]
+    fn resolves_fuzzy_query_fallback() {
+        let entries = vec![
+            CachedJimakuEntry {
+                id: 882,
+                name: "Ore wo Suki nano wa Omae dake ka yo".to_string(),
+                english_name: Some("ORESUKI: Are you the only one who loves me?".to_string()),
+                japanese_name: Some("俺を好きなのはお前だけかよ".to_string()),
+            },
+            CachedJimakuEntry {
+                id: 10420,
+                name: "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set".to_string(),
+                english_name: Some("ORESUKI: Are you the only one who loves me?: Our Playball / Our End Run / Our Game".to_string()),
+                japanese_name: Some("俺を好きなのはお前だけかよ～俺たちのゲームセット～".to_string()),
+            },
+        ];
+
+        let resolved = resolve_entry(&entries, "Oretachi no Game Set");
+        assert!(resolved.is_some());
+        assert_eq!(resolved.unwrap().id, 10420);
     }
 }

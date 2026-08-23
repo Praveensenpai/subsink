@@ -198,23 +198,31 @@ impl SubtitleProvider {
             all_files
         };
 
-        // Filter by target episode if specified
-        let filtered: Vec<SubtitleSearchResult> = files_to_use
-            .into_iter()
-            .filter(|r| {
-                if let Some(ep) = target_ep {
-                    let ep_padded = if ep.len() == 1 { format!("0{}", ep) } else { ep.to_string() };
-                    r.title.contains(ep)
-                        || r.title.contains(&ep_padded)
-                        || r.title.contains(&format!("E{}", ep_padded))
-                        || r.title.contains(&format!("e{}", ep_padded))
-                } else {
-                    true
-                }
-            })
-            .collect();
+        Ok(Self::filter_subtitles(files_to_use, target_ep))
+    }
 
-        Ok(filtered)
+    pub fn filter_subtitles(files_to_use: Vec<SubtitleSearchResult>, target_ep: Option<&str>) -> Vec<SubtitleSearchResult> {
+        if let Some(ep) = target_ep {
+            if files_to_use.len() > 1 {
+                let ep_padded = if ep.len() == 1 { format!("0{}", ep) } else { ep.to_string() };
+                let filtered: Vec<SubtitleSearchResult> = files_to_use
+                    .iter()
+                    .filter(|r| {
+                        r.title.contains(ep)
+                            || r.title.contains(&ep_padded)
+                            || r.title.contains(&format!("E{}", ep_padded))
+                            || r.title.contains(&format!("e{}", ep_padded))
+                    })
+                    .cloned()
+                    .collect();
+
+                if !filtered.is_empty() {
+                    return filtered;
+                }
+            }
+        }
+
+        files_to_use
     }
 
     async fn scrape_entry_files(&self, entry: &CachedJimakuEntry) -> Result<Vec<SubtitleSearchResult>> {
@@ -290,5 +298,77 @@ impl SubtitleProvider {
         } else {
             Ok(temp_path)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_filter_subtitles_matches_target_episode() {
+        let files = vec![
+            SubtitleSearchResult {
+                provider: "Jimaku.cc".to_string(),
+                title: "Oresuki - S01E01.srt".to_string(),
+                episode: None,
+                language: "JP".to_string(),
+                download_url: "https://jimaku.cc/dl/1".to_string(),
+                file_format: "srt".to_string(),
+            },
+            SubtitleSearchResult {
+                provider: "Jimaku.cc".to_string(),
+                title: "Oresuki - S01E02.srt".to_string(),
+                episode: None,
+                language: "JP".to_string(),
+                download_url: "https://jimaku.cc/dl/2".to_string(),
+                file_format: "srt".to_string(),
+            },
+        ];
+
+        let filtered = SubtitleProvider::filter_subtitles(files.clone(), Some("02"));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].title, "Oresuki - S01E02.srt");
+    }
+
+    #[test]
+    fn test_filter_subtitles_falls_back_when_no_episode_matches() {
+        let files = vec![
+            SubtitleSearchResult {
+                provider: "Jimaku.cc".to_string(),
+                title: "Oresuki - OVA Part 1.srt".to_string(),
+                episode: None,
+                language: "JP".to_string(),
+                download_url: "https://jimaku.cc/dl/1".to_string(),
+                file_format: "srt".to_string(),
+            },
+            SubtitleSearchResult {
+                provider: "Jimaku.cc".to_string(),
+                title: "Oresuki - OVA Part 2.srt".to_string(),
+                episode: None,
+                language: "JP".to_string(),
+                download_url: "https://jimaku.cc/dl/2".to_string(),
+                file_format: "srt".to_string(),
+            },
+        ];
+
+        let filtered = SubtitleProvider::filter_subtitles(files.clone(), Some("13"));
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_subtitles_single_file_standalone_ova() {
+        let files = vec![SubtitleSearchResult {
+            provider: "Jimaku.cc".to_string(),
+            title: "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set - [Erai-raws] Oresuki - Oretachi no Game Set (Whisper AI).srt".to_string(),
+            episode: None,
+            language: "JP".to_string(),
+            download_url: "https://jimaku.cc/dl/10420".to_string(),
+            file_format: "srt".to_string(),
+        }];
+
+        let filtered = SubtitleProvider::filter_subtitles(files.clone(), Some("13"));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].title, files[0].title);
     }
 }
