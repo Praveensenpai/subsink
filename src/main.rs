@@ -1,5 +1,6 @@
 mod parser;
 mod provider;
+mod scanner;
 mod syncer;
 mod ui;
 
@@ -7,9 +8,7 @@ use anyhow::{bail, Result};
 use inquire::Autocomplete;
 use inquire::CustomUserError;
 use inquire::{Select, Text};
-use std::cmp::Ordering;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use std::path::Path;
 
 #[derive(Clone)]
 struct JimakuAutocompleter {
@@ -59,11 +58,18 @@ async fn main() -> Result<()> {
 
     // STEP 1: Select Anime Video File
     ui::print_step(1, 4, "Select Raw Anime Video File");
-    let video_path = select_video_file()?;
-    ui::print_success(&format!("Selected File: {}", video_path.file_name().unwrap().to_string_lossy()));
+    let video_path = scanner::select_video_file()?;
+    let file_display_name = video_path
+        .file_name()
+        .map(|f| f.to_string_lossy())
+        .unwrap_or_else(|| "video".into());
+    ui::print_success(&format!("Selected File: {}", file_display_name));
 
     let parent_dir = video_path.parent().unwrap_or_else(|| Path::new("."));
-    let video_stem = video_path.file_stem().unwrap().to_string_lossy();
+    let video_stem = video_path
+        .file_stem()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_else(|| "video".into());
 
     // STEP 2: Load Jimaku Index & Live Search
     ui::print_step(2, 4, "Search Subtitle Database (Live Fuzzy Match)");
@@ -71,7 +77,10 @@ async fn main() -> Result<()> {
     let provider = provider::SubtitleProvider::new();
     let entries = provider.ensure_jimaku_cache().await?;
     spinner.finish_and_clear();
-    ui::print_success(&format!("Loaded {} anime titles into local index", entries.len()));
+    ui::print_success(&format!(
+        "Loaded {} anime titles into local index",
+        entries.len()
+    ));
 
     let meta = parser::parse_anime_filename(&video_path);
     let default_query = meta.title.clone();
@@ -100,7 +109,9 @@ async fn main() -> Result<()> {
     // STEP 3: Fetch Files for Matched Anime (Cached for 30 Days)
     ui::print_step(3, 4, "Fetching Available Subtitle Files (30 Days Cache)");
     let fetch_spinner = ui::create_spinner("Loading episode subtitle files...");
-    let results = provider.fetch_entry_files(entry, meta.episode.as_deref()).await?;
+    let results = provider
+        .fetch_entry_files(entry, meta.episode.as_deref())
+        .await?;
     fetch_spinner.finish_and_clear();
 
     if results.is_empty() {
@@ -113,7 +124,8 @@ async fn main() -> Result<()> {
         .map(|r| format!("[{}] {}", r.language, r.title))
         .collect();
 
-    let selected_display = Select::new("Choose subtitle file to download & sync:", display_options).prompt()?;
+    let selected_display =
+        Select::new("Choose subtitle file to download & sync:", display_options).prompt()?;
     let choice_idx = results
         .iter()
         .position(|r| format!("[{}] {}", r.language, r.title) == selected_display)
@@ -128,7 +140,10 @@ async fn main() -> Result<()> {
     download_spinner.finish_and_clear();
     ui::print_success("Subtitle downloaded successfully.");
 
-    let sub_ext = temp_sub.extension().and_then(|s| s.to_str()).unwrap_or("srt");
+    let sub_ext = temp_sub
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("srt");
     let target_sub_filename = format!("{}.ja.{}", video_stem, sub_ext);
     let target_sub_path = parent_dir.join(&target_sub_filename);
 
@@ -151,8 +166,13 @@ async fn main() -> Result<()> {
                 ui::print_success(&format!("ALASS Alignment: {}", shift_summary));
             }
             syncer::SyncResult::WarningLargeShift(shift_summary) => {
-                ui::print_warning(&format!("ALASS produced an unusually large shift: {}", shift_summary));
-                ui::print_warning("Preserving downloaded subtitle without sync to prevent corruption.");
+                ui::print_warning(&format!(
+                    "ALASS produced an unusually large shift: {}",
+                    shift_summary
+                ));
+                ui::print_warning(
+                    "Preserving downloaded subtitle without sync to prevent corruption.",
+                );
                 std::fs::copy(&temp_sub, &target_sub_path)?;
             }
             syncer::SyncResult::DirectCopy => {
@@ -204,124 +224,6 @@ fn print_help() {
     );
 }
 
-fn select_video_file() -> Result<PathBuf> {
-    let videos_dir = dirs::video_dir().unwrap_or_else(|| PathBuf::from("./"));
-    
-    let mut files = Vec::new();
-    for entry in WalkDir::new(&videos_dir).max_depth(3).into_iter().flatten() {
-        if entry.file_type().is_file() {
-            if let Some(ext) = entry.path().extension().and_then(|s| s.to_str()) {
-                if matches!(ext.to_lowercase().as_str(), "mkv" | "mp4" | "avi" | "webm") {
-                    files.push(entry.path().to_path_buf());
-                }
-            }
-        }
-    }
-
-    if files.is_empty() {
-        for entry in WalkDir::new("./").max_depth(2).into_iter().flatten() {
-            if entry.file_type().is_file() {
-                if let Some(ext) = entry.path().extension().and_then(|s| s.to_str()) {
-                    if matches!(ext.to_lowercase().as_str(), "mkv" | "mp4" | "avi" | "webm") {
-                        files.push(entry.path().to_path_buf());
-                    }
-                }
-            }
-        }
-    }
-
-    if files.is_empty() {
-        let custom_path_str = Text::new("Enter video file path:").prompt()?;
-        return Ok(PathBuf::from(custom_path_str));
-    }
-
-    files.sort_by(|left, right| natural_path_cmp(left, right));
-
-    let file_display_names: Vec<String> = files
-        .iter()
-        .map(|p| {
-            let file_name = p.file_name().unwrap().to_string_lossy();
-            let parent = p.parent().and_then(|par| par.file_name()).map(|f| f.to_string_lossy()).unwrap_or_default();
-            format!("{}/{}", parent, file_name)
-        })
-        .collect();
-
-    let choice = Select::new("Select video file from ~/Videos:", file_display_names).prompt()?;
-    let selected_index = files.iter().position(|p| {
-        let name = format!(
-            "{}/{}",
-            p.parent().and_then(|par| par.file_name()).map(|f| f.to_string_lossy()).unwrap_or_default(),
-            p.file_name().unwrap().to_string_lossy()
-        );
-        name == choice
-    }).unwrap_or(0);
-
-    Ok(files[selected_index].clone())
-}
-
-/// Compares paths naturally, so numbered episodes sort as 2, 3, 10 rather
-/// than 10, 2, 3.
-fn natural_path_cmp(left: &Path, right: &Path) -> Ordering {
-    natural_cmp(&left.to_string_lossy(), &right.to_string_lossy())
-}
-
-fn natural_cmp(left: &str, right: &str) -> Ordering {
-    let left_bytes = left.as_bytes();
-    let right_bytes = right.as_bytes();
-    let (mut left_index, mut right_index) = (0, 0);
-
-    while left_index < left_bytes.len() && right_index < right_bytes.len() {
-        let left_is_digit = left_bytes[left_index].is_ascii_digit();
-        let right_is_digit = right_bytes[right_index].is_ascii_digit();
-
-        if left_is_digit && right_is_digit {
-            let left_start = left_index;
-            let right_start = right_index;
-
-            while left_index < left_bytes.len() && left_bytes[left_index].is_ascii_digit() {
-                left_index += 1;
-            }
-            while right_index < right_bytes.len() && right_bytes[right_index].is_ascii_digit() {
-                right_index += 1;
-            }
-
-            let left_number = &left_bytes[left_start..left_index];
-            let right_number = &right_bytes[right_start..right_index];
-            let left_significant = left_number
-                .iter()
-                .position(|digit| *digit != b'0')
-                .unwrap_or(left_number.len() - 1);
-            let right_significant = right_number
-                .iter()
-                .position(|digit| *digit != b'0')
-                .unwrap_or(right_number.len() - 1);
-            let left_number = &left_number[left_significant..];
-            let right_number = &right_number[right_significant..];
-
-            match left_number.len().cmp(&right_number.len()) {
-                Ordering::Equal => match left_number.cmp(right_number) {
-                    Ordering::Equal => {}
-                    order => return order,
-                },
-                order => return order,
-            }
-        } else {
-            let left_byte = left_bytes[left_index].to_ascii_lowercase();
-            let right_byte = right_bytes[right_index].to_ascii_lowercase();
-
-            match left_byte.cmp(&right_byte) {
-                Ordering::Equal => {
-                    left_index += 1;
-                    right_index += 1;
-                }
-                order => return order,
-            }
-        }
-    }
-
-    left_bytes.len().cmp(&right_bytes.len())
-}
-
 fn resolve_entry<'a>(
     entries: &'a [provider::CachedJimakuEntry],
     selected: &str,
@@ -348,10 +250,8 @@ fn resolve_entry<'a>(
         trimmed.eq_ignore_ascii_case(&e.name)
             || e.english_name
                 .as_deref()
-                .map_or(false, |eng| trimmed.eq_ignore_ascii_case(eng))
-            || e.japanese_name
-                .as_deref()
-                .map_or(false, |jp| trimmed == jp)
+                .is_some_and(|eng| trimmed.eq_ignore_ascii_case(eng))
+            || (e.japanese_name.as_deref() == Some(trimmed))
     }) {
         return Some(entry);
     }
@@ -367,7 +267,7 @@ fn resolve_entry<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{natural_cmp, parse_cli_args, resolve_entry, CliAction};
+    use super::{parse_cli_args, resolve_entry, CliAction};
     use crate::provider::CachedJimakuEntry;
 
     #[test]
@@ -381,15 +281,6 @@ mod tests {
             CliAction::Version
         ));
         assert!(parse_cli_args(&["--unknown".to_string()]).is_err());
-    }
-
-    #[test]
-    fn sorts_episode_numbers_naturally() {
-        let mut episodes = vec!["episode 10.mkv", "episode 02.mkv", "episode 3.mkv"];
-
-        episodes.sort_by(|left, right| natural_cmp(left, right));
-
-        assert_eq!(episodes, vec!["episode 02.mkv", "episode 3.mkv", "episode 10.mkv"]);
     }
 
     #[test]

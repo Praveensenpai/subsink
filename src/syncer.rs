@@ -17,7 +17,12 @@ impl SubtitleSyncer {
     }
 
     /// Automatically sync unaligned subtitle to video audio track
-    pub fn sync_subtitle(&self, video_path: &Path, raw_sub_path: &Path, output_sub_path: &Path) -> Result<SyncResult> {
+    pub fn sync_subtitle(
+        &self,
+        video_path: &Path,
+        raw_sub_path: &Path,
+        output_sub_path: &Path,
+    ) -> Result<SyncResult> {
         let alass_bin = dirs::home_dir()
             .map(|h| h.join(".local/bin/alass"))
             .unwrap_or_else(|| PathBuf::from("alass"));
@@ -71,7 +76,9 @@ impl SubtitleSyncer {
     fn fallback_sync(raw_sub_path: &Path, output_sub_path: &Path) -> Result<()> {
         let ffmpeg_check = Command::new("ffmpeg").arg("-version").output();
         if ffmpeg_check.is_err() {
-            return Err(anyhow!("ffmpeg, alass, or ffsubsync is required for audio subtitle synchronization"));
+            return Err(anyhow!(
+                "ffmpeg, alass, or ffsubsync is required for audio subtitle synchronization"
+            ));
         }
 
         std::fs::copy(raw_sub_path, output_sub_path)
@@ -110,10 +117,15 @@ pub fn evaluate_alass_output(output: &str) -> SyncResult {
 }
 
 pub fn parse_alass_offset_seconds(output: &str) -> Option<f64> {
-    let re = regex::Regex::new(r"shifted block of \d+ subtitles.*by (-?)(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)").unwrap();
+    let re = regex::Regex::new(
+        r"shifted block of \d+ subtitles.*by (-?)(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)",
+    )
+    .unwrap();
     if let Some(cap) = re.captures(output) {
         let is_neg = &cap[1] == "-";
-        let h: f64 = cap.get(2).map_or(0.0, |m| m.as_str().parse().unwrap_or(0.0));
+        let h: f64 = cap
+            .get(2)
+            .map_or(0.0, |m| m.as_str().parse().unwrap_or(0.0));
         let m: f64 = cap[3].parse().unwrap_or(0.0);
         let s: f64 = cap[4].parse().unwrap_or(0.0);
         let total = h * 3600.0 + m * 60.0 + s;
@@ -129,12 +141,21 @@ pub fn parse_offset_string(input: &str) -> Result<i64> {
         return Ok(0);
     }
 
-    if let Some(ms_str) = trimmed.strip_suffix("ms").or_else(|| trimmed.strip_suffix("MS")) {
-        let ms: i64 = ms_str.trim().parse().context("Invalid milliseconds offset")?;
+    if let Some(ms_str) = trimmed
+        .strip_suffix("ms")
+        .or_else(|| trimmed.strip_suffix("MS"))
+    {
+        let ms: i64 = ms_str
+            .trim()
+            .parse()
+            .context("Invalid milliseconds offset")?;
         return Ok(ms);
     }
 
-    if let Some(s_str) = trimmed.strip_suffix('s').or_else(|| trimmed.strip_suffix('S')) {
+    if let Some(s_str) = trimmed
+        .strip_suffix('s')
+        .or_else(|| trimmed.strip_suffix('S'))
+    {
         let s: f64 = s_str.trim().parse().context("Invalid seconds offset")?;
         return Ok((s * 1000.0).round() as i64);
     }
@@ -158,15 +179,19 @@ pub fn apply_manual_offset(input_path: &Path, output_path: &Path, offset_ms: i64
         .context("Failed to read subtitle file for manual offset")?;
 
     let shifted = shift_subtitle_text(&content, offset_ms);
-    std::fs::write(output_path, shifted)
-        .context("Failed to write shifted subtitle file")?;
+    std::fs::write(output_path, shifted).context("Failed to write shifted subtitle file")?;
 
     Ok(())
 }
 
 pub fn shift_subtitle_text(content: &str, offset_ms: i64) -> String {
-    let srt_re = regex::Regex::new(r"(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})").unwrap();
-    let ass_dialogue_re = regex::Regex::new(r"^(Dialogue:\s*[^,]+,)(\d+:\d{2}:\d{2}\.\d{2}),(\d+:\d{2}:\d{2}\.\d{2}),(.*)$").unwrap();
+    let srt_re =
+        regex::Regex::new(r"(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})")
+            .unwrap();
+    let ass_dialogue_re = regex::Regex::new(
+        r"^(Dialogue:\s*[^,]+,)(\d+:\d{2}:\d{2}\.\d{2}),(\d+:\d{2}:\d{2}\.\d{2}),(.*)$",
+    )
+    .unwrap();
 
     let mut result_lines = Vec::new();
 
@@ -200,7 +225,7 @@ pub fn shift_subtitle_text(content: &str, offset_ms: i64) -> String {
 }
 
 fn shift_srt_timestamp(ts: &str, offset_ms: i64) -> String {
-    let parts: Vec<&str> = ts.split(|c| c == ':' || c == ',' || c == '.').collect();
+    let parts: Vec<&str> = ts.split([':', ',', '.']).collect();
     if parts.len() == 4 {
         if let (Ok(h), Ok(m), Ok(s), Ok(ms)) = (
             parts[0].parse::<i64>(),
@@ -223,7 +248,7 @@ fn shift_srt_timestamp(ts: &str, offset_ms: i64) -> String {
 }
 
 fn shift_ass_timestamp(ts: &str, offset_ms: i64) -> String {
-    let parts: Vec<&str> = ts.split(|c| c == ':' || c == '.').collect();
+    let parts: Vec<&str> = ts.split([':', '.']).collect();
     if parts.len() == 4 {
         if let (Ok(h), Ok(m), Ok(s), Ok(cs)) = (
             parts[0].parse::<i64>(),
@@ -296,7 +321,9 @@ mod tests {
         let large_shift = "shifted block of 1064 subtitles with length 1:10:15.122 by -0:19:24.900\nwarn: some subtitles now have negative timings";
         assert_eq!(
             evaluate_alass_output(large_shift),
-            SyncResult::WarningLargeShift("Shifted 1064 subtitle lines by -0:19:24.900".to_string())
+            SyncResult::WarningLargeShift(
+                "Shifted 1064 subtitle lines by -0:19:24.900".to_string()
+            )
         );
     }
 }
