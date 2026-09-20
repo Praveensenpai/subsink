@@ -39,8 +39,8 @@ CLI Entry (src/main.rs)
 - **Consumers**: Process entrypoint (`bin "subsink"`).
 - **Side Effects / I/O**: Terminal I/O, subprocess invocations, file creation for subtitles.
 
-### `src/scanner.rs` (Role: infra/io, Lines: 300)
-- **Responsibility**: Recursively scans `~/Videos` and current working directory up to depth 8 for anime video files, deduplicates canonical paths, formats relative display paths, and sorts episode numbers naturally.
+### `src/scanner.rs` (Role: infra/io, Lines: 349)
+- **Responsibility**: Recursively scans `~/Videos` and current working directory up to depth 8 for anime video files, deduplicates canonical paths, formats relative display paths, prioritizes files in CWD, and sorts episode numbers naturally.
 - **Imports**: `walkdir::WalkDir`, `inquire::{Select, Text}`, `anyhow::Result`, `std::cmp::Ordering`, `std::collections::HashSet`, `std::path::{Path, PathBuf}`
 - **Constants**:
   ```rust
@@ -54,6 +54,7 @@ CLI Entry (src/main.rs)
   pub fn scan_video_files(base_dir: &Path, max_depth: usize) -> Vec<PathBuf>
   pub fn format_video_display(path: &Path, videos_dir: &Path, cwd: &Path, cwd_is_home: bool) -> String
   pub fn discover_video_files(videos_dir: &Path, cwd: &Path, home_dir: Option<&Path>) -> Vec<PathBuf>
+  pub fn sort_video_files(files: &mut [PathBuf], cwd: &Path, cwd_is_home: bool)
   pub fn select_video_file() -> Result<PathBuf>
   pub fn natural_path_cmp(left: &Path, right: &Path) -> Ordering
   pub fn natural_cmp(left: &str, right: &str) -> Ordering
@@ -159,6 +160,8 @@ cargo fmt --check
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-09-20 (v0.1.6)**:
+  - Added contextual proximity sorting (`sort_video_files`): video files located directly in or under current working directory (`cwd`) are prioritized first, followed by natural episode naming order (`01, 02 ... 10`).
 - **2026-09-20 (v0.1.5)**:
   - Added `src/scanner.rs` with deep recursive search (`max_depth: 8`), expanded video extensions (`mkv`, `mp4`, `avi`, `webm`, `m4v`, `mov`, `ts`, `flv`, `wmv`), and relative path display formatting.
   - Added concurrent current working directory (`cwd`) traversal with canonical deduplication against `~/Videos`.
