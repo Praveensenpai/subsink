@@ -1,43 +1,13 @@
 mod parser;
 mod provider;
 mod scanner;
+mod search;
 mod syncer;
 mod ui;
 
 use anyhow::{bail, Result};
-use inquire::Autocomplete;
-use inquire::CustomUserError;
 use inquire::{Select, Text};
 use std::path::Path;
-
-#[derive(Clone)]
-struct JimakuAutocompleter {
-    entries: Vec<provider::CachedJimakuEntry>,
-}
-
-impl Autocomplete for JimakuAutocompleter {
-    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
-        let matches = provider::SubtitleProvider::fuzzy_filter_entries(&self.entries, input);
-        Ok(matches
-            .into_iter()
-            .map(|e| {
-                if let Some(ref jp) = e.japanese_name {
-                    format!("{} ({})", e.name, jp)
-                } else {
-                    e.name
-                }
-            })
-            .collect())
-    }
-
-    fn get_completion(
-        &mut self,
-        _input: &str,
-        highlighted_suggestion: Option<String>,
-    ) -> Result<Option<String>, CustomUserError> {
-        Ok(highlighted_suggestion)
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -85,24 +55,9 @@ async fn main() -> Result<()> {
     let meta = parser::parse_anime_filename(&video_path);
     let default_query = meta.title.clone();
 
-    let autocompleter = JimakuAutocompleter {
-        entries: entries.clone(),
-    };
-
-    let selected_anime_str = Text::new("Search anime title (type to filter live):")
-        .with_initial_value(&default_query)
-        .with_default(&default_query)
-        .with_autocomplete(autocompleter)
-        .prompt()?;
-
-    let matched_entry = resolve_entry(&entries, &selected_anime_str);
-
-    let entry = match matched_entry {
-        Some(e) => e,
-        None => {
-            ui::print_warning("No matching anime entry selected.");
-            return Ok(());
-        }
+    let Some(entry) = search::select_anime_entry(entries, &default_query)? else {
+        ui::print_warning("No matching anime entry selected.");
+        return Ok(());
     };
 
     ui::print_success(&format!("Matched Anime: {}", entry.name));
@@ -111,7 +66,7 @@ async fn main() -> Result<()> {
     ui::print_step(3, 4, "Fetching Available Subtitle Files (30 Days Cache)");
     let fetch_spinner = ui::create_spinner("Loading episode subtitle files...");
     let results = provider
-        .fetch_entry_files(entry, meta.episode.as_deref())
+        .fetch_entry_files(&entry, meta.episode.as_deref())
         .await?;
     fetch_spinner.finish_and_clear();
 
@@ -225,51 +180,9 @@ fn print_help() {
     );
 }
 
-fn resolve_entry<'a>(
-    entries: &'a [provider::CachedJimakuEntry],
-    selected: &str,
-) -> Option<&'a provider::CachedJimakuEntry> {
-    let trimmed = selected.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    // 1. Exact match against formatted suggestion "name (japanese_name)" or "name"
-    if let Some(entry) = entries.iter().find(|e| {
-        let formatted = if let Some(ref jp) = e.japanese_name {
-            format!("{} ({})", e.name, jp)
-        } else {
-            e.name.clone()
-        };
-        trimmed == formatted
-    }) {
-        return Some(entry);
-    }
-
-    // 2. Exact match against name, english_name, or japanese_name
-    if let Some(entry) = entries.iter().find(|e| {
-        trimmed.eq_ignore_ascii_case(&e.name)
-            || e.english_name
-                .as_deref()
-                .is_some_and(|eng| trimmed.eq_ignore_ascii_case(eng))
-            || (e.japanese_name.as_deref() == Some(trimmed))
-    }) {
-        return Some(entry);
-    }
-
-    // 3. Fallback: fuzzy filter / highest scoring entry
-    let fuzzy_top = provider::SubtitleProvider::fuzzy_filter_entries(entries, trimmed);
-    if let Some(top) = fuzzy_top.into_iter().next() {
-        return entries.iter().find(|e| e.id == top.id);
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{parse_cli_args, resolve_entry, CliAction};
-    use crate::provider::CachedJimakuEntry;
+    use super::{parse_cli_args, CliAction};
 
     #[test]
     fn recognizes_help_and_version_flags() {
@@ -282,54 +195,5 @@ mod tests {
             CliAction::Version
         ));
         assert!(parse_cli_args(&["--unknown".to_string()]).is_err());
-    }
-
-    #[test]
-    fn resolves_exact_autocomplete_entry_with_shared_prefix() {
-        let entries = vec![
-            CachedJimakuEntry {
-                id: 882,
-                name: "Ore wo Suki nano wa Omae dake ka yo".to_string(),
-                english_name: Some("ORESUKI: Are you the only one who loves me?".to_string()),
-                japanese_name: Some("俺を好きなのはお前だけかよ".to_string()),
-            },
-            CachedJimakuEntry {
-                id: 10420,
-                name: "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set".to_string(),
-                english_name: Some("ORESUKI: Are you the only one who loves me?: Our Playball / Our End Run / Our Game".to_string()),
-                japanese_name: Some("俺を好きなのはお前だけかよ～俺たちのゲームセット～".to_string()),
-            },
-        ];
-
-        let selected = "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set (俺を好きなのはお前だけかよ～俺たちのゲームセット～)";
-        let resolved = resolve_entry(&entries, selected);
-        assert!(resolved.is_some());
-        assert_eq!(resolved.unwrap().id, 10420);
-        assert_eq!(
-            resolved.unwrap().name,
-            "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set"
-        );
-    }
-
-    #[test]
-    fn resolves_fuzzy_query_fallback() {
-        let entries = vec![
-            CachedJimakuEntry {
-                id: 882,
-                name: "Ore wo Suki nano wa Omae dake ka yo".to_string(),
-                english_name: Some("ORESUKI: Are you the only one who loves me?".to_string()),
-                japanese_name: Some("俺を好きなのはお前だけかよ".to_string()),
-            },
-            CachedJimakuEntry {
-                id: 10420,
-                name: "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set".to_string(),
-                english_name: Some("ORESUKI: Are you the only one who loves me?: Our Playball / Our End Run / Our Game".to_string()),
-                japanese_name: Some("俺を好きなのはお前だけかよ～俺たちのゲームセット～".to_string()),
-            },
-        ];
-
-        let resolved = resolve_entry(&entries, "Oretachi no Game Set");
-        assert!(resolved.is_some());
-        assert_eq!(resolved.unwrap().id, 10420);
     }
 }

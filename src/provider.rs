@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
-use fuzzy_matcher::skim::SkimMatcherV2;
-use fuzzy_matcher::FuzzyMatcher;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -39,6 +39,16 @@ pub struct CachedJimakuEntry {
     pub name: String,
     pub english_name: Option<String>,
     pub japanese_name: Option<String>,
+}
+
+impl fmt::Display for CachedJimakuEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(ref jp) = self.japanese_name {
+            write!(f, "{} ({})", self.name, jp)
+        } else {
+            write!(f, "{}", self.name)
+        }
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -138,46 +148,6 @@ impl SubtitleProvider {
         }
 
         Ok(entries)
-    }
-
-    /// Perform fast fuzzy matching against the cached entries
-    pub fn fuzzy_filter_entries(
-        entries: &[CachedJimakuEntry],
-        query: &str,
-    ) -> Vec<CachedJimakuEntry> {
-        if query.trim().is_empty() {
-            return entries.iter().take(20).cloned().collect();
-        }
-
-        let matcher = SkimMatcherV2::default();
-        let mut scored = Vec::new();
-
-        for entry in entries {
-            let mut best_score = matcher.fuzzy_match(&entry.name, query);
-
-            if let Some(ref eng) = entry.english_name {
-                if let Some(s) = matcher.fuzzy_match(eng, query) {
-                    best_score = Some(best_score.map_or(s, |prev| prev.max(s)));
-                }
-            }
-
-            if let Some(ref jp) = entry.japanese_name {
-                if let Some(s) = matcher.fuzzy_match(jp, query) {
-                    best_score = Some(best_score.map_or(s, |prev| prev.max(s)));
-                }
-            }
-
-            if let Some(score) = best_score {
-                scored.push((score, entry.clone()));
-            }
-        }
-
-        scored.sort_by_key(|b| std::cmp::Reverse(b.0));
-        scored
-            .into_iter()
-            .map(|(_, entry)| entry)
-            .take(25)
-            .collect()
     }
 
     /// Fetch files for a selected entry ID with 30 days local cache (~/.cache/subsink/entry_{id}_files.json)

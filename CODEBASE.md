@@ -8,6 +8,7 @@ CLI Entry (src/main.rs)
   │
   ├──> Scanner (src/scanner.rs) ──> WalkDir ~/Videos & CWD (depth 8) ──> Deduplicated Raw Videos
   ├──> Parser (src/parser.rs) ──> AnimeMetadata { title, episode }
+  ├──> Search (src/search.rs) ──> Inquire Live Fuzzy Select & Skim Scorer ──> Selected CachedJimakuEntry
   ├──> Provider (src/provider.rs) ──> Jimaku API / Local Cache ──> Download Subtitle (.srt / .ass)
   ├──> Syncer (src/syncer.rs) ──> ALASS Audio Voice Alignment / Manual Shift
   └──> UI (src/ui.rs) ──> Inquire Prompts, Spinners & Render Config
@@ -15,18 +16,17 @@ CLI Entry (src/main.rs)
 
 ## 2. Global Constraints & Architecture Patterns
 - **Primary Language & Edition**: Rust 2021 edition (1.80+)
-- **Architectural Paradigm**: Modular CLI with clear role-based separation (`scanner`, `parser`, `provider`, `syncer`, `ui`)
+- **Architectural Paradigm**: Modular CLI with clear role-based separation (`scanner`, `parser`, `search`, `provider`, `syncer`, `ui`)
 - **Hard Constraints**: <400 lines/file (<300 soft), <60 lines/fn, zero production `unwrap()`/`expect()`, 0 warnings (`cargo clippy -- -D warnings`).
 - **Target Distribution**: Linux `x86_64` standalone binary (`subsink-linux-x86_64.tar.gz`) via GitHub Releases and local binary install (`~/.local/bin/subsink`).
 
 ## 3. Module & Interface Skeleton
 
-### `src/main.rs` (Role: cli/orchestrator, Lines: 334)
+### `src/main.rs` (Role: cli/orchestrator, Lines: 199)
 - **Responsibility**: Coordinates 4-step wizard workflow (video selection, database search, subtitle download, audio alignment).
-- **Imports**: `crate::parser`, `crate::provider`, `crate::scanner`, `crate::syncer`, `crate::ui`, `inquire::*`, `anyhow::*`
+- **Imports**: `crate::parser`, `crate::provider`, `crate::scanner`, `crate::search`, `crate::syncer`, `crate::ui`, `inquire::{Select, Text}`, `anyhow::*`
 - **Types & Enums**:
   ```rust
-  struct JimakuAutocompleter { entries: Vec<provider::CachedJimakuEntry> }
   enum CliAction { Run, Help, Version }
   ```
 - **Public Functions & Signatures**:
@@ -34,10 +34,21 @@ CLI Entry (src/main.rs)
   async fn main() -> Result<()>
   fn parse_cli_args(args: &[String]) -> Result<CliAction>
   fn print_help()
-  fn resolve_entry<'a>(entries: &'a [provider::CachedJimakuEntry], selected: &str) -> Option<&'a provider::CachedJimakuEntry>
   ```
 - **Consumers**: Process entrypoint (`bin "subsink"`).
 - **Side Effects / I/O**: Terminal I/O, subprocess invocations, file creation for subtitles.
+
+### `src/search.rs` (Role: domain/search, Lines: 212)
+- **Responsibility**: Real-time fuzzy anime title search and selection via `inquire::Select`, multi-token matching, case-insensitive scoring (`SkimMatcherV2`), and fallback ranking across Romaji, English, and Japanese names.
+- **Imports**: `fuzzy_matcher::skim::SkimMatcherV2`, `fuzzy_matcher::FuzzyMatcher`, `inquire::Select`, `anyhow::Result`, `crate::provider::CachedJimakuEntry`
+- **Public Functions & Signatures**:
+  ```rust
+  pub fn score_entry(matcher: &SkimMatcherV2, entry: &CachedJimakuEntry, query: &str) -> Option<i64>
+  pub fn fuzzy_filter_entries(entries: &[CachedJimakuEntry], query: &str) -> Vec<CachedJimakuEntry>
+  pub fn select_anime_entry(entries: Vec<CachedJimakuEntry>, default_query: &str) -> Result<Option<CachedJimakuEntry>>
+  ```
+- **Consumers**: `src/main.rs`, `src/provider.rs`
+- **Side Effects / I/O**: Interactive terminal selection prompt with live filtering.
 
 ### `src/scanner.rs` (Role: infra/io, Lines: 349)
 - **Responsibility**: Recursively scans `~/Videos` and current working directory up to depth 8 for anime video files, deduplicates canonical paths, formats relative display paths, prioritizes files in CWD, and sorts episode numbers naturally.
@@ -76,9 +87,9 @@ CLI Entry (src/main.rs)
 - **Consumers**: `src/main.rs`
 - **Side Effects / I/O**: Pure in-memory parsing.
 
-### `src/provider.rs` (Role: infra/api, Lines: 385)
-- **Responsibility**: Fetches Jimaku subtitle metadata, caches anime index locally (~/.cache/subsink) with 30-day TTL, executes fuzzy matching, and downloads/extracts subtitles.
-- **Imports**: `reqwest::Client`, `serde::{Deserialize, Serialize}`, `fuzzy_matcher::*`, `tempfile::*`, `zip::*`, `anyhow::Result`, `std::sync::LazyLock`
+### `src/provider.rs` (Role: infra/api, Lines: 355)
+- **Responsibility**: Fetches Jimaku subtitle metadata, caches anime index locally (~/.cache/subsink) with 30-day TTL, implements Display for entries, and downloads/extracts subtitles.
+- **Imports**: `reqwest::Client`, `serde::{Deserialize, Serialize}`, `tempfile::*`, `zip::*`, `anyhow::Result`, `std::sync::LazyLock`, `std::fmt`
 - **Types & Enums**:
   ```rust
   pub struct SubtitleProvider { client: Client, cache_dir: PathBuf }
@@ -90,12 +101,12 @@ CLI Entry (src/main.rs)
   impl SubtitleProvider {
       pub fn new() -> Self
       pub async fn ensure_jimaku_cache(&self) -> Result<Vec<CachedJimakuEntry>>
-      pub fn fuzzy_filter_entries(entries: &[CachedJimakuEntry], query: &str) -> Vec<CachedJimakuEntry>
       pub async fn fetch_entry_files(&self, entry: &CachedJimakuEntry, target_ep: Option<&str>) -> Result<Vec<SubtitleSearchResult>>
+      pub fn filter_subtitles(files_to_use: Vec<SubtitleSearchResult>, target_ep: Option<&str>) -> Vec<SubtitleSearchResult>
       pub async fn download_subtitle(&self, result: &SubtitleSearchResult, dest_dir: &Path) -> Result<PathBuf>
   }
   ```
-- **Consumers**: `src/main.rs`
+- **Consumers**: `src/main.rs`, `src/search.rs`
 - **Side Effects / I/O**: HTTP requests to `jimaku.cc`, disk cache read/write under `~/.cache/subsink`.
 
 ### `src/syncer.rs` (Role: domain/infra, Lines: 329)
@@ -141,7 +152,7 @@ CLI Entry (src/main.rs)
 ## 4. Execution Lifecycle Trace
 1. **Startup**: `subsink` parses CLI flags (`-h`, `--help`, `-v`, `--version`).
 2. **Step 1 (Scan & Select)**: `scanner::select_video_file()` discovers anime videos across `~/Videos` and current working directory up to depth 8 with deduplication, formats human-readable relative paths, and prompts user via interactive selection.
-3. **Step 2 (Jimaku Search)**: `parser::parse_anime_filename()` extracts anime title & episode; `provider::SubtitleProvider` loads cached titles and provides live interactive fuzzy autocompletion.
+3. **Step 2 (Jimaku Live Search)**: `parser::parse_anime_filename()` extracts anime title & episode; `search::select_anime_entry()` presents an interactive real-time `inquire::Select` prompt pre-filled with the parsed title, powered by case-insensitive multi-token Skim scoring.
 4. **Step 3 (Subtitle Fetch)**: Fetches and displays available `.ass`/`.srt` releases from Jimaku (cached for 30 days), filtered for the target episode.
 5. **Step 4 (Download & Sync)**: Downloads selected subtitle archive, then aligns timings using ALASS audio-voice recognition or applies user-specified millisecond offset.
 6. **Output**: Writes final subtitle as `<video_stem>.ja.<ext>` alongside the video file.
@@ -160,10 +171,16 @@ cargo fmt --check
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-10-01 (v0.1.8)**:
+  - Extracted dedicated `src/search.rs` module for interactive anime title search, scoring, and filtering.
+  - Replaced non-interactive `inquire::Text` prompt with live-filtering `inquire::Select` with instant pre-filled filter (`with_starting_filter_input`).
+  - Fixed smart-case sensitivity bug in `SkimMatcherV2` by enforcing case-insensitive matching (`.ignore_case()`), enabling seamless matching for all-caps season titles (e.g. `SEASON 2`).
+  - Implemented multi-token and out-of-order matching support across Romaji (`name`), English (`english_name`), and Japanese (`japanese_name`) fields.
+  - Implemented `Display` for `CachedJimakuEntry` in `src/provider.rs`.
+  - Added unit test suite covering case-insensitivity, token matching, abbreviations, English/Japanese titles, and live verification against the real Jimaku cache index.
 - **2026-10-01 (v0.1.7)**:
   - Universal filename & directory parsing: added extraction for multi-season patterns (`S02E01`), end-of-stem episode numbers (`- 01`), final episode markers (`12 END`), specials with subtitles (`01 - へやキャン△episode0`), and parent folder hierarchy fallback (`Season 02/01.mkv`).
   - Formatted multi-season search queries (`{Base Title} Season {N}`) to align with Jimaku title naming.
-  - Pre-filled interactive search buffer via Inquire's `with_initial_value` so live autocompletion immediately highlights relevant anime entries.
   - Verified clean parsing across all 52 anime video files in `~/Videos/Anime`.
 - **2026-09-20 (v0.1.6)**:
   - Added contextual proximity sorting (`sort_video_files`): video files located directly in or under current working directory (`cwd`) are prioritized first, followed by natural episode naming order (`01, 02 ... 10`).
@@ -171,6 +188,3 @@ cargo fmt --check
   - Added `src/scanner.rs` with deep recursive search (`max_depth: 8`), expanded video extensions (`mkv`, `mp4`, `avi`, `webm`, `m4v`, `mov`, `ts`, `flv`, `wmv`), and relative path display formatting.
   - Added concurrent current working directory (`cwd`) traversal with canonical deduplication against `~/Videos`.
   - Refactored `src/main.rs` and `src/provider.rs` to keep all files under 400 lines and eliminate production `unwrap()` calls.
-  - Cleaned dead code in `src/parser.rs` and converted regexes to static `LazyLock`.
-  - Fixed clippy patterns across `provider.rs`, `syncer.rs`, and `ui.rs`.
-  - Added full test coverage for deep nested folder scanning and relative path formatting.
