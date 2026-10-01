@@ -62,12 +62,12 @@ CLI Entry (src/main.rs)
 - **Consumers**: `src/main.rs`
 - **Side Effects / I/O**: Filesystem directory walking (`dirs::video_dir()` and `std::env::current_dir()`), terminal selection prompt.
 
-### `src/parser.rs` (Role: domain/logic, Lines: 84)
-- **Responsibility**: Cleans raw anime file stem names (removing release group tags, video codecs, bracket tags) and extracts episode numbers using static `LazyLock` regexes.
+### `src/parser.rs` (Role: domain/logic, Lines: 283)
+- **Responsibility**: Robust extraction of anime title, season (`Option<u32>`), and episode (`Option<String>`) across scene formats (`S02E01`), standard end-of-stem numbers, end markers (`END`/`FINAL`), bracketed rips, specials with subtitles, and parent directory hierarchy fallback.
 - **Imports**: `regex::Regex`, `std::path::Path`, `std::sync::LazyLock`
 - **Types & Enums**:
   ```rust
-  pub struct AnimeMetadata { pub title: String, pub episode: Option<String> }
+  pub struct AnimeMetadata { pub title: String, pub season: Option<u32>, pub episode: Option<String> }
   ```
 - **Public Functions & Signatures**:
   ```rust
@@ -160,6 +160,11 @@ cargo fmt --check
 ```
 
 ## 6. Recent Iteration Changes
+- **2026-10-01 (v0.1.7)**:
+  - Universal filename & directory parsing: added extraction for multi-season patterns (`S02E01`), end-of-stem episode numbers (`- 01`), final episode markers (`12 END`), specials with subtitles (`01 - へやキャン△episode0`), and parent folder hierarchy fallback (`Season 02/01.mkv`).
+  - Formatted multi-season search queries (`{Base Title} Season {N}`) to align with Jimaku title naming.
+  - Pre-filled interactive search buffer via Inquire's `with_initial_value` so live autocompletion immediately highlights relevant anime entries.
+  - Verified clean parsing across all 52 anime video files in `~/Videos/Anime`.
 - **2026-09-20 (v0.1.6)**:
   - Added contextual proximity sorting (`sort_video_files`): video files located directly in or under current working directory (`cwd`) are prioritized first, followed by natural episode naming order (`01, 02 ... 10`).
 - **2026-09-20 (v0.1.5)**:

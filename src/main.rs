@@ -90,6 +90,7 @@ async fn main() -> Result<()> {
     };
 
     let selected_anime_str = Text::new("Search anime title (type to filter live):")
+        .with_initial_value(&default_query)
         .with_default(&default_query)
         .with_autocomplete(autocompleter)
         .prompt()?;
