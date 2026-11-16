@@ -208,7 +208,7 @@ impl SubtitleProvider {
                         || r.title.contains(&ep_padded)
                         || r.title.contains(&format!("E{}", ep_padded))
                         || r.title.contains(&format!("e{}", ep_padded))
-                        || (is_special && is_special_file(&r.title))
+                        || is_special_file(&r.title)
                 })
                 .cloned()
                 .collect();
@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_subtitles_preserves_specials_when_flagged() {
+    fn test_filter_subtitles_always_preserves_specials() {
         let files = vec![
             mock_sub("Jimaku", "Heya CAMP△ - 01.ass", "https://jimaku.cc/1"),
             mock_sub(
@@ -323,8 +323,11 @@ mod tests {
             ),
         ];
 
-        let filtered = SubtitleProvider::filter_subtitles(files, Some("01"), true);
+        let filtered = SubtitleProvider::filter_subtitles(files.clone(), Some("01"), false);
         assert_eq!(filtered.len(), 2);
+
+        let filtered_sp = SubtitleProvider::filter_subtitles(files, Some("01"), true);
+        assert_eq!(filtered_sp.len(), 2);
     }
 
     #[test]
