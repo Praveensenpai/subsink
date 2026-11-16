@@ -12,9 +12,11 @@ static DIR_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Valid regex syntax")
 });
 
+static HTML_TAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<[^>]*>").expect("Valid regex syntax"));
+
 static FILE_LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"href="(subtitles/japanese/[^"]+)"[^>]*>(?:<strong>)?(.*?)(?:</strong>)?</a>"#)
-        .expect("Valid regex syntax")
+    Regex::new(r#"href="(subtitles/japanese/[^"]+)"[^>]*>(.*?)</a>"#).expect("Valid regex syntax")
 });
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -146,7 +148,8 @@ impl KitsunekkoProvider {
             let rel_path = &cap[1];
             let raw_text = &cap[2];
 
-            let file_name = html_escape::decode_html_entities(raw_text).to_string();
+            let clean_text = HTML_TAG_RE.replace_all(raw_text, "").trim().to_string();
+            let file_name = html_escape::decode_html_entities(&clean_text).to_string();
             let file_name = if file_name.is_empty() {
                 rel_path
                     .split('/')
