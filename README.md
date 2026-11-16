@@ -1,31 +1,43 @@
-# ⛩️ subsink
+# ⛩️ 字幕シンク • SUBSINK
 
-> **Minimalist, Blazing-Fast Japanese Anime Subtitle Fetcher & Auto-Syncer for Passive Language Immersion.**
+> **Blazing-Fast Interactive TUI Japanese Anime Subtitle Fetcher & Voice-Aligned Auto-Syncer.**
 
 [![Rust](https://img.shields.io/badge/Language-Rust-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![Sync](https://img.shields.io/badge/Engine-ALASS-brightgreen.svg?style=flat-square)](https://github.com/kaegi/alass)
-[![Provider](https://img.shields.io/badge/Provider-Jimaku.cc-purple.svg?style=flat-square)](https://jimaku.cc)
+[![Jimaku](https://img.shields.io/badge/Provider-Jimaku.cc-purple.svg?style=flat-square)](https://jimaku.cc)
+[![Kitsunekko](https://img.shields.io/badge/Provider-Kitsunekko-yellow.svg?style=flat-square)](https://kitsunekko.net)
 
 ---
 
 ```text
-┌───────────────────────────────────────────────────────────────┐
-│        ⛩️  S U B S I N K  ──  Japanese Anime SubSyncer        │
-└───────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ⛩️  S U B S I N K   [1. Video] ──► [2. Database] ──► [3. Subtitle] ──► [4. Sync] ──► [5. Done]  │
+├──────────────────────────────────────────────────────────┬──────────────────────────────────┤
+│ ❯ Search: heya camp                                      │ Video Details / Anime Metadata   │
+│   • Heya Camp (Room Camp) [へやキャン△]                  │ ──────────────────────────────── │
+│     Provider: [Jimaku.cc] [Kitsunekko]                   │ Romaji:    Heya Camp             │
+│   • Yuru Camp (Laid-Back Camp) [ゆるキャン△]             │ English:   Room Camp             │
+│   • Yuru Camp Season 2                                   │ Japanese:  へやキャン△           │
+│                                                          │ Matches:   12 episodes + OVA/SP  │
+├──────────────────────────────────────────────────────────┴──────────────────────────────────┤
+│ Hotkeys: [↑/↓] Navigate  •  [Type] Fuzzy Search  •  [Enter] Select  •  [p] Play  •  [Esc] Back │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**`subsink`** is a high-performance terminal UI utility written in Rust designed for Japanese language learners and passive immersion fans. It automates selecting raw anime files, fuzzy-searching 4,500+ Japanese anime titles from **Jimaku.cc**, downloading subtitle archives, and automatically aligning speech timings to video audio using **ALASS**.
+**`subsink`** is a high-performance interactive terminal user interface (TUI) written in Rust designed for Japanese language learners and immersion fans. It automates discovering raw anime video files, fuzzy-searching 7,200+ Japanese anime titles across both **Jimaku.cc** and **Kitsunekko**, downloading subtitle archives, and automatically aligning speech timings to video audio using **ALASS**.
 
 ---
 
 ## ✨ Features
 
-- ⚡ **Instant Local Fuzzy Match**: Caches Jimaku's 4,500+ anime index locally for instant `< 5ms` live fuzzy searching as you type.
+- 🖥️ **Full-Screen Interactive Ratatui TUI**: Built with `ratatui 0.29` & `crossterm 0.28`. Two-column split layout with real-time video inspection, live fuzzy database search, and audio alignment modals.
+- 🦊 **Dual Subtitle Providers**: Smart dual aggregation querying both **Jimaku.cc** and **Kitsunekko** in parallel, linked via normalized title hashing. Never miss an OVA or TV episode.
+- ⚡ **Instant Local Fuzzy Match**: Caches 7,200+ unified anime titles locally with 30-day disk caching for `< 5ms` instant search as you type.
 - 🎯 **Automated ALASS Audio Alignment**: Uses voice activity detection (VAD) to shift subtitle timestamps directly against your video's audio stream.
 - 🏷️ **Smart Filename Parser**: Automatically strips release group tags (`[VCB-Studio]`, `1080p`, `x265`, etc.) to extract clean anime titles and episode numbers.
-- 📦 **30-Day Per-Anime Cache**: Remembers episode file listings for 30 days—binge 12 episodes with zero network delay.
-- 🎨 **Minimalist Aesthetic TUI**: Clean terminal cards, smooth progress spinners, and deep anime color palette.
+- 🎬 **Direct MPV Playback**: Press `[p]` upon completion to immediately test synchronized subtitles in `mpv`.
+- 🕹️ **Headless / CLI Mode**: Retains `--cli` flag for classic inquirer wizard workflows or scripted environments.
 
 ---
 
@@ -69,17 +81,18 @@ install -m 755 target/release/subsink ~/.local/bin/subsink
 ## 🎧 Workflow Overview
 
 ```text
-[Raw Video (.mkv)] ──► [subsink] ──► [Jimaku.cc Search] ──► [ALASS Audio Sync] ──► [<video_name>.ja.srt]
-                                                                                            │
-                                                                                            ▼
-                                                                                     [immersionpod / impd]
+[Raw Video (.mkv)] ──► [subsink TUI] ──► [Jimaku + Kitsunekko] ──► [ALASS Audio Sync] ──► [<name>.ja.srt]
+                                                                                                │
+                                                                                                ▼
+                                                                                         [mpv / impd]
 ```
 
 1. Run `subsink` anywhere in your terminal.
-2. Select your raw anime video file from `~/Videos`.
-3. Type to filter through 4,500+ anime titles live.
-4. Select the matching episode subtitle.
-5. `subsink` downloads, aligns timestamps via ALASS, and outputs `<video_name>.ja.srt` alongside your raw video file for instant use with **`impd`** / **`mpd`** / **`mpv`**.
+2. Filter and choose your raw anime video file.
+3. Live fuzzy search through 7,200+ anime titles across Jimaku and Kitsunekko.
+4. Select your preferred subtitle release.
+5. `subsink` downloads, aligns timestamps via ALASS, and outputs `<video_stem>.ja.<ext>`.
+6. Press `[p]` to immediately launch `mpv` with synced subtitles, or `[q]` to exit.
 
 ---
 

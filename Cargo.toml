@@ -1,6 +1,6 @@
 [package]
 name = "subsink"
-version = "0.1.8"
+version = "0.1.9"
 
 edition = "2021"
 description = "A minimalist TUI tool to download & auto-sync Japanese subtitles for raw anime immersion"
@@ -25,3 +25,5 @@ html-escape = "0.2"
 fuzzy-matcher = "0.3.7"
 alass-core = "2.0.0"
 alass-util = "0.3.0"
+ratatui = "0.29"
+crossterm = "0.28"
