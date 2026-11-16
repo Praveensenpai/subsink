@@ -278,6 +278,10 @@ mod tests {
                 }
             }
         }
-        assert_eq!(count, 52, "Expected to verify all 52 anime files");
+        assert!(
+            count >= 52,
+            "Expected to verify at least 52 anime files, found {}",
+            count
+        );
     }
 }

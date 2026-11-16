@@ -41,14 +41,14 @@ async fn main() -> Result<()> {
         .map(|s| s.to_string_lossy())
         .unwrap_or_else(|| "video".into());
 
-    // STEP 2: Load Jimaku Index & Live Search
+    // STEP 2: Load Jimaku & Kitsunekko Indices & Live Search
     ui::print_step(2, 4, "Search Subtitle Database (Live Fuzzy Match)");
-    let spinner = ui::create_spinner("Loading Jimaku subtitle index...");
+    let spinner = ui::create_spinner("Loading subtitle database indices (Jimaku & Kitsunekko)...");
     let provider = provider::SubtitleProvider::new();
-    let entries = provider.ensure_jimaku_cache().await?;
+    let entries = provider.ensure_cache().await?;
     spinner.finish_and_clear();
     ui::print_success(&format!(
-        "Loaded {} anime titles into local index",
+        "Loaded {} anime titles into unified local index",
         entries.len()
     ));
 
@@ -65,8 +65,18 @@ async fn main() -> Result<()> {
     // STEP 3: Fetch Files for Matched Anime (Cached for 30 Days)
     ui::print_step(3, 4, "Fetching Available Subtitle Files (30 Days Cache)");
     let fetch_spinner = ui::create_spinner("Loading episode subtitle files...");
+    let is_special = meta.title.to_lowercase().contains("sp")
+        || meta.title.to_lowercase().contains("ova")
+        || meta.title.to_lowercase().contains("special")
+        || video_path.to_string_lossy().to_lowercase().contains("sp")
+        || video_path.to_string_lossy().to_lowercase().contains("ova")
+        || video_path
+            .to_string_lossy()
+            .to_lowercase()
+            .contains("special");
+
     let results = provider
-        .fetch_entry_files(&entry, meta.episode.as_deref())
+        .fetch_entry_files(&entry, meta.episode.as_deref(), is_special)
         .await?;
     fetch_spinner.finish_and_clear();
 
@@ -77,14 +87,14 @@ async fn main() -> Result<()> {
 
     let display_options: Vec<String> = results
         .iter()
-        .map(|r| format!("[{}] {}", r.language, r.title))
+        .map(|r| format!("[{}] [{}] {}", r.language, r.provider, r.title))
         .collect();
 
     let selected_display =
         Select::new("Choose subtitle file to download & sync:", display_options).prompt()?;
     let choice_idx = results
         .iter()
-        .position(|r| format!("[{}] {}", r.language, r.title) == selected_display)
+        .position(|r| format!("[{}] [{}] {}", r.language, r.provider, r.title) == selected_display)
         .unwrap_or(0);
 
     let selected_sub = &results[choice_idx];

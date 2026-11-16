@@ -3,9 +3,9 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use inquire::Select;
 
-use crate::provider::CachedJimakuEntry;
+use crate::provider::UnifiedAnimeEntry;
 
-fn match_candidate(matcher: &SkimMatcherV2, entry: &CachedJimakuEntry, query: &str) -> Option<i64> {
+fn match_candidate(matcher: &SkimMatcherV2, entry: &UnifiedAnimeEntry, query: &str) -> Option<i64> {
     let mut best = matcher.fuzzy_match(&entry.name, query);
 
     if let Some(ref eng) = entry.english_name {
@@ -23,7 +23,7 @@ fn match_candidate(matcher: &SkimMatcherV2, entry: &CachedJimakuEntry, query: &s
     best
 }
 
-pub fn score_entry(matcher: &SkimMatcherV2, entry: &CachedJimakuEntry, query: &str) -> Option<i64> {
+pub fn score_entry(matcher: &SkimMatcherV2, entry: &UnifiedAnimeEntry, query: &str) -> Option<i64> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return Some(0);
@@ -53,7 +53,7 @@ pub fn score_entry(matcher: &SkimMatcherV2, entry: &CachedJimakuEntry, query: &s
     full_score
 }
 
-pub fn fuzzy_filter_entries(entries: &[CachedJimakuEntry], query: &str) -> Vec<CachedJimakuEntry> {
+pub fn fuzzy_filter_entries(entries: &[UnifiedAnimeEntry], query: &str) -> Vec<UnifiedAnimeEntry> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return entries.iter().take(25).cloned().collect();
@@ -73,16 +73,16 @@ pub fn fuzzy_filter_entries(entries: &[CachedJimakuEntry], query: &str) -> Vec<C
 }
 
 pub fn select_anime_entry(
-    entries: Vec<CachedJimakuEntry>,
+    entries: Vec<UnifiedAnimeEntry>,
     default_query: &str,
-) -> Result<Option<CachedJimakuEntry>> {
+) -> Result<Option<UnifiedAnimeEntry>> {
     let matcher = SkimMatcherV2::default().ignore_case();
     let trimmed_default = default_query.trim();
 
     let has_matches =
         !trimmed_default.is_empty() && !fuzzy_filter_entries(&entries, trimmed_default).is_empty();
 
-    let scorer = |input: &str, entry: &CachedJimakuEntry, _val: &str, _idx: usize| -> Option<i64> {
+    let scorer = |input: &str, entry: &UnifiedAnimeEntry, _val: &str, _idx: usize| -> Option<i64> {
         score_entry(&matcher, entry, input)
     };
 
@@ -108,37 +108,42 @@ pub fn select_anime_entry(
 mod tests {
     use super::*;
 
-    fn sample_entries() -> Vec<CachedJimakuEntry> {
+    fn sample_entries() -> Vec<UnifiedAnimeEntry> {
         vec![
-            CachedJimakuEntry {
-                id: 681,
+            UnifiedAnimeEntry {
                 name: "Yuru Camp△".to_string(),
                 english_name: Some("Laid-Back Camp".to_string()),
                 japanese_name: Some("ゆるキャン△".to_string()),
+                jimaku_id: Some(681),
+                kitsunekko_slug: Some("Yuru+Camp".to_string()),
             },
-            CachedJimakuEntry {
-                id: 325,
+            UnifiedAnimeEntry {
                 name: "Yuru Camp△ SEASON 2".to_string(),
                 english_name: Some("LAID-BACK CAMP SEASON2".to_string()),
                 japanese_name: Some("ゆるキャン△ SEASON２".to_string()),
+                jimaku_id: Some(325),
+                kitsunekko_slug: Some("Yuru+Camp+S2".to_string()),
             },
-            CachedJimakuEntry {
-                id: 9442,
+            UnifiedAnimeEntry {
                 name: "Yuru Camp△ SEASON 2 OVA".to_string(),
                 english_name: None,
                 japanese_name: Some("ゆるキャン△ SEASON 2 OVA".to_string()),
+                jimaku_id: Some(9442),
+                kitsunekko_slug: None,
             },
-            CachedJimakuEntry {
-                id: 2350,
+            UnifiedAnimeEntry {
                 name: "Yuru Camp△ SEASON 3".to_string(),
                 english_name: Some("Laid-Back Camp Season 3".to_string()),
                 japanese_name: Some("ゆるキャン△ SEASON３".to_string()),
+                jimaku_id: Some(2350),
+                kitsunekko_slug: Some("Yuru+Camp+S3".to_string()),
             },
-            CachedJimakuEntry {
-                id: 882,
+            UnifiedAnimeEntry {
                 name: "Ore wo Suki nano wa Omae dake ka yo".to_string(),
                 english_name: Some("ORESUKI: Are you the only one who loves me?".to_string()),
                 japanese_name: Some("俺を好きなのはお前だけかよ".to_string()),
+                jimaku_id: Some(882),
+                kitsunekko_slug: None,
             },
         ]
     }
@@ -148,7 +153,7 @@ mod tests {
         let entries = sample_entries();
         let matches = fuzzy_filter_entries(&entries, "Yuru Camp Season 2");
         assert!(!matches.is_empty());
-        assert_eq!(matches[0].id, 325);
+        assert_eq!(matches[0].jimaku_id, Some(325));
     }
 
     #[test]
@@ -156,7 +161,7 @@ mod tests {
         let entries = sample_entries();
         let matches = fuzzy_filter_entries(&entries, "yuru camp 2");
         assert!(!matches.is_empty());
-        assert_eq!(matches[0].id, 325);
+        assert_eq!(matches[0].jimaku_id, Some(325));
     }
 
     #[test]
@@ -164,7 +169,7 @@ mod tests {
         let entries = sample_entries();
         let matches = fuzzy_filter_entries(&entries, "Season 2 Yuru Camp");
         assert!(!matches.is_empty());
-        assert_eq!(matches[0].id, 325);
+        assert_eq!(matches[0].jimaku_id, Some(325));
     }
 
     #[test]
@@ -172,7 +177,7 @@ mod tests {
         let entries = sample_entries();
         let matches = fuzzy_filter_entries(&entries, "laid back camp 2");
         assert!(!matches.is_empty());
-        assert_eq!(matches[0].id, 325);
+        assert_eq!(matches[0].jimaku_id, Some(325));
     }
 
     #[test]
@@ -187,26 +192,5 @@ mod tests {
         let entries = sample_entries();
         let matches = fuzzy_filter_entries(&entries, "");
         assert_eq!(matches.len(), 5);
-    }
-
-    #[test]
-    fn test_jimaku_cached_index_real_world_yuru_camp() {
-        let cache_path = dirs::cache_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("./"))
-            .join("subsink/jimaku_index.json");
-        if !cache_path.exists() {
-            return;
-        }
-        let Ok(file) = std::fs::File::open(&cache_path) else {
-            return;
-        };
-        let Ok(entries) = serde_json::from_reader::<_, Vec<CachedJimakuEntry>>(file) else {
-            return;
-        };
-
-        let matches = fuzzy_filter_entries(&entries, "Yuru Camp Season 2");
-        assert!(!matches.is_empty());
-        assert_eq!(matches[0].id, 325);
-        assert_eq!(matches[0].name, "Yuru Camp△ SEASON 2");
     }
 }

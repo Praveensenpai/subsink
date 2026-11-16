@@ -1,27 +1,17 @@
-use anyhow::{anyhow, Result};
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use std::fmt;
+pub mod jimaku;
+pub mod kitsunekko;
 
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 use zip::ZipArchive;
 
-static ENTRY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"<div class="entry" data-extra="([^"]+)">\s*<a href="/entry/(\d+)"[^>]*>(.*?)</a>"#,
-    )
-    .expect("Valid regex syntax")
-});
-
-static FILE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"href="(/entry/\d+/download/[^"]+)"[^>]*>(.*?)</a>"#).expect("Valid regex syntax")
-});
-
-const CACHE_TTL_30_DAYS: Duration = Duration::from_secs(30 * 86400);
+pub const CACHE_TTL_30_DAYS: Duration = Duration::from_secs(30 * 86400);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtitleSearchResult {
@@ -34,14 +24,15 @@ pub struct SubtitleSearchResult {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct CachedJimakuEntry {
-    pub id: u64,
+pub struct UnifiedAnimeEntry {
     pub name: String,
     pub english_name: Option<String>,
     pub japanese_name: Option<String>,
+    pub jimaku_id: Option<u64>,
+    pub kitsunekko_slug: Option<String>,
 }
 
-impl fmt::Display for CachedJimakuEntry {
+impl fmt::Display for UnifiedAnimeEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(ref jp) = self.japanese_name {
             write!(f, "{} ({})", self.name, jp)
@@ -51,14 +42,17 @@ impl fmt::Display for CachedJimakuEntry {
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct JimakuDataExtra {
-    name: Option<String>,
-    english_name: Option<String>,
-    japanese_name: Option<String>,
+pub fn normalize_title(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
-fn read_cached_json<T: for<'de> Deserialize<'de>>(path: &Path, ttl: Duration) -> Option<T> {
+pub(crate) fn read_cached_json<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+    ttl: Duration,
+) -> Option<T> {
     let metadata = std::fs::metadata(path).ok()?;
     let modified = metadata.modified().ok()?;
     let age = SystemTime::now().duration_since(modified).ok()?;
@@ -71,7 +65,8 @@ fn read_cached_json<T: for<'de> Deserialize<'de>>(path: &Path, ttl: Duration) ->
 
 pub struct SubtitleProvider {
     client: reqwest::Client,
-    cache_dir: PathBuf,
+    jimaku: jimaku::JimakuProvider,
+    kitsunekko: kitsunekko::KitsunekkoProvider,
 }
 
 impl SubtitleProvider {
@@ -87,174 +82,154 @@ impl SubtitleProvider {
             .join("subsink");
         let _ = std::fs::create_dir_all(&cache_dir);
 
-        Self { client, cache_dir }
+        let jimaku = jimaku::JimakuProvider::new(client.clone(), cache_dir.clone());
+        let kitsunekko = kitsunekko::KitsunekkoProvider::new(client.clone(), cache_dir);
+
+        Self {
+            client,
+            jimaku,
+            kitsunekko,
+        }
     }
 
-    /// Load or update local Jimaku index cache (~/.cache/subsink/jimaku_index.json)
-    pub async fn ensure_jimaku_cache(&self) -> Result<Vec<CachedJimakuEntry>> {
-        let cache_path = self.cache_dir.join("jimaku_index.json");
+    /// Load or update indices from Jimaku & Kitsunekko and merge them into a unified list
+    pub async fn ensure_cache(&self) -> Result<Vec<UnifiedAnimeEntry>> {
+        let (jimaku_res, kitsunekko_res) =
+            tokio::join!(self.jimaku.ensure_index(), self.kitsunekko.ensure_index());
 
-        if let Some(entries) =
-            read_cached_json::<Vec<CachedJimakuEntry>>(&cache_path, CACHE_TTL_30_DAYS)
-        {
-            if !entries.is_empty() {
-                return Ok(entries);
+        let jimaku_entries = jimaku_res.unwrap_or_default();
+        let kitsunekko_entries = kitsunekko_res.unwrap_or_default();
+
+        let mut kitsu_map: HashMap<String, String> = HashMap::new();
+        for k in &kitsunekko_entries {
+            let key = normalize_title(&k.name);
+            if !key.is_empty() {
+                kitsu_map.insert(key, k.slug.clone());
             }
         }
 
-        let entries = self.fetch_jimaku_index().await?;
-        if !entries.is_empty() {
-            if let Ok(file) = File::create(&cache_path) {
-                let _ = serde_json::to_writer(file, &entries);
-            }
-        }
+        let mut unified = Vec::with_capacity(jimaku_entries.len() + 500);
 
-        Ok(entries)
-    }
+        for j in jimaku_entries {
+            let norm_name = normalize_title(&j.name);
+            let norm_en = j.english_name.as_deref().map(normalize_title);
 
-    async fn fetch_jimaku_index(&self) -> Result<Vec<CachedJimakuEntry>> {
-        let resp = self.client.get("https://jimaku.cc/").send().await?;
-        if !resp.status().is_success() {
-            return Ok(Vec::new());
-        }
+            let matched_slug = kitsu_map
+                .remove(&norm_name)
+                .or_else(|| norm_en.and_then(|en| kitsu_map.remove(&en)));
 
-        let html_doc = resp.text().await?;
-        let mut entries = Vec::new();
-
-        for cap in ENTRY_RE.captures_iter(&html_doc) {
-            let data_extra_raw = &cap[1];
-            let id: u64 = cap[2].parse().unwrap_or(0);
-            if id == 0 {
-                continue;
-            }
-
-            let decoded_extra = html_escape::decode_html_entities(data_extra_raw);
-            let extra: Option<JimakuDataExtra> = serde_json::from_str(&decoded_extra).ok();
-            let title_decoded = html_escape::decode_html_entities(&cap[3]).to_string();
-
-            let name = extra
-                .as_ref()
-                .and_then(|e| e.name.clone())
-                .unwrap_or(title_decoded);
-            let english_name = extra.as_ref().and_then(|e| e.english_name.clone());
-            let japanese_name = extra.as_ref().and_then(|e| e.japanese_name.clone());
-
-            entries.push(CachedJimakuEntry {
-                id,
-                name,
-                english_name,
-                japanese_name,
+            unified.push(UnifiedAnimeEntry {
+                name: j.name,
+                english_name: j.english_name,
+                japanese_name: j.japanese_name,
+                jimaku_id: Some(j.id),
+                kitsunekko_slug: matched_slug,
             });
         }
 
-        Ok(entries)
+        for k in kitsunekko_entries {
+            let key = normalize_title(&k.name);
+            if kitsu_map.contains_key(&key) {
+                unified.push(UnifiedAnimeEntry {
+                    name: k.name,
+                    english_name: None,
+                    japanese_name: None,
+                    jimaku_id: None,
+                    kitsunekko_slug: Some(k.slug),
+                });
+            }
+        }
+
+        Ok(unified)
     }
 
-    /// Fetch files for a selected entry ID with 30 days local cache (~/.cache/subsink/entry_{id}_files.json)
+    /// Fetch files for an anime from all linked providers (Jimaku and/or Kitsunekko)
     pub async fn fetch_entry_files(
         &self,
-        entry: &CachedJimakuEntry,
+        entry: &UnifiedAnimeEntry,
         target_ep: Option<&str>,
+        is_special: bool,
     ) -> Result<Vec<SubtitleSearchResult>> {
-        let cache_path = self
-            .cache_dir
-            .join(format!("entry_{}_files.json", entry.id));
-
-        let cached_files: Option<Vec<SubtitleSearchResult>> =
-            read_cached_json(&cache_path, CACHE_TTL_30_DAYS);
-
-        let files_to_use = match cached_files {
-            Some(files) if !files.is_empty() => files,
-            _ => {
-                let fetched = self.scrape_entry_files(entry).await?;
-                if !fetched.is_empty() {
-                    if let Ok(file) = File::create(&cache_path) {
-                        let _ = serde_json::to_writer(file, &fetched);
-                    }
-                }
-                fetched
+        let jimaku_future = async {
+            if let Some(id) = entry.jimaku_id {
+                self.jimaku
+                    .fetch_files(id, &entry.name)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
             }
         };
 
-        Ok(Self::filter_subtitles(files_to_use, target_ep))
+        let kitsu_future = async {
+            if let Some(ref slug) = entry.kitsunekko_slug {
+                self.kitsunekko
+                    .fetch_files(slug, &entry.name)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        };
+
+        let (jimaku_files, kitsu_files) = tokio::join!(jimaku_future, kitsu_future);
+
+        let mut combined = jimaku_files;
+        combined.extend(kitsu_files);
+
+        Ok(Self::filter_subtitles(combined, target_ep, is_special))
     }
 
     pub fn filter_subtitles(
-        files_to_use: Vec<SubtitleSearchResult>,
+        files: Vec<SubtitleSearchResult>,
         target_ep: Option<&str>,
+        is_special: bool,
     ) -> Vec<SubtitleSearchResult> {
-        if let Some(ep) = target_ep {
-            if files_to_use.len() > 1 {
-                let ep_padded = if ep.len() == 1 {
-                    format!("0{}", ep)
-                } else {
-                    ep.to_string()
-                };
-                let filtered: Vec<SubtitleSearchResult> = files_to_use
-                    .iter()
-                    .filter(|r| {
-                        r.title.contains(ep)
-                            || r.title.contains(&ep_padded)
-                            || r.title.contains(&format!("E{}", ep_padded))
-                            || r.title.contains(&format!("e{}", ep_padded))
-                    })
-                    .cloned()
-                    .collect();
+        if files.len() <= 1 {
+            return files;
+        }
 
-                if !filtered.is_empty() {
-                    return filtered;
-                }
+        let is_special_file = |title: &str| -> bool {
+            let l = title.to_lowercase();
+            l.contains("sp") || l.contains("ova") || l.contains("special") || l.contains("extra")
+        };
+
+        if let Some(ep) = target_ep {
+            let ep_padded = if ep.len() == 1 {
+                format!("0{}", ep)
+            } else {
+                ep.to_string()
+            };
+
+            let filtered: Vec<SubtitleSearchResult> = files
+                .iter()
+                .filter(|r| {
+                    r.title.contains(ep)
+                        || r.title.contains(&ep_padded)
+                        || r.title.contains(&format!("E{}", ep_padded))
+                        || r.title.contains(&format!("e{}", ep_padded))
+                        || (is_special && is_special_file(&r.title))
+                })
+                .cloned()
+                .collect();
+
+            if !filtered.is_empty() {
+                return filtered;
             }
         }
 
-        files_to_use
-    }
-
-    async fn scrape_entry_files(
-        &self,
-        entry: &CachedJimakuEntry,
-    ) -> Result<Vec<SubtitleSearchResult>> {
-        let entry_url = format!("https://jimaku.cc/entry/{}", entry.id);
-        let mut results = Vec::new();
-
-        let resp = match self.client.get(&entry_url).send().await {
-            Ok(r) => r,
-            Err(_) => return Ok(results),
-        };
-
-        let html = match resp.text().await {
-            Ok(t) => t,
-            Err(_) => return Ok(results),
-        };
-
-        for cap in FILE_RE.captures_iter(&html) {
-            let rel_url = &cap[1];
-            let file_name = html_escape::decode_html_entities(&cap[2]).to_string();
-            let full_url = format!("https://jimaku.cc{}", rel_url);
-
-            let ext = if file_name.ends_with(".ass") {
-                "ass"
-            } else if file_name.ends_with(".srt") {
-                "srt"
-            } else if file_name.ends_with(".zip") {
-                "zip"
-            } else {
-                "sub"
-            };
-
-            let display_title = format!("{} - {}", entry.name, file_name);
-
-            results.push(SubtitleSearchResult {
-                provider: "Jimaku.cc".to_string(),
-                title: display_title,
-                episode: None,
-                language: "JP".to_string(),
-                download_url: full_url,
-                file_format: ext.to_string(),
-            });
+        if is_special {
+            let specials: Vec<SubtitleSearchResult> = files
+                .iter()
+                .filter(|r| is_special_file(&r.title))
+                .cloned()
+                .collect();
+            if !specials.is_empty() {
+                return specials;
+            }
         }
 
-        Ok(results)
+        files
     }
 
     /// Download subtitle file to target destination
@@ -307,9 +282,9 @@ impl SubtitleProvider {
 mod tests {
     use super::*;
 
-    fn mock_sub(title: &str, url: &str) -> SubtitleSearchResult {
+    fn mock_sub(provider: &str, title: &str, url: &str) -> SubtitleSearchResult {
         SubtitleSearchResult {
-            provider: "Jimaku.cc".to_string(),
+            provider: provider.to_string(),
             title: title.to_string(),
             episode: None,
             language: "JP".to_string(),
@@ -319,37 +294,100 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_title_strips_punctuation_and_spaces() {
+        assert_eq!(normalize_title("Heya Camp△"), "heyacamp");
+        assert_eq!(normalize_title("Yuru Camp△ S2!"), "yurucamps2");
+        assert_eq!(normalize_title("Solo Camping for Two"), "solocampingfortwo");
+    }
+
+    #[test]
     fn test_filter_subtitles_matches_target_episode() {
         let files = vec![
-            mock_sub("Oresuki - S01E01.srt", "https://jimaku.cc/dl/1"),
-            mock_sub("Oresuki - S01E02.srt", "https://jimaku.cc/dl/2"),
+            mock_sub("Jimaku", "Oresuki - S01E01.srt", "https://jimaku.cc/dl/1"),
+            mock_sub("Jimaku", "Oresuki - S01E02.srt", "https://jimaku.cc/dl/2"),
         ];
 
-        let filtered = SubtitleProvider::filter_subtitles(files, Some("02"));
+        let filtered = SubtitleProvider::filter_subtitles(files, Some("02"), false);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].title, "Oresuki - S01E02.srt");
     }
 
     #[test]
-    fn test_filter_subtitles_falls_back_when_no_episode_matches() {
+    fn test_filter_subtitles_preserves_specials_when_flagged() {
         let files = vec![
-            mock_sub("Oresuki - OVA Part 1.srt", "https://jimaku.cc/dl/1"),
-            mock_sub("Oresuki - OVA Part 2.srt", "https://jimaku.cc/dl/2"),
+            mock_sub("Jimaku", "Heya CAMP△ - 01.ass", "https://jimaku.cc/1"),
+            mock_sub(
+                "Kitsunekko",
+                "Heya Camp - SP.srt",
+                "https://kitsunekko.net/sp",
+            ),
         ];
 
-        let filtered = SubtitleProvider::filter_subtitles(files, Some("13"));
+        let filtered = SubtitleProvider::filter_subtitles(files, Some("01"), true);
         assert_eq!(filtered.len(), 2);
     }
 
     #[test]
-    fn test_filter_subtitles_single_file_standalone_ova() {
-        let files = vec![mock_sub(
-            "Ore wo Suki nano wa Omae dake ka yo: Oretachi no Game Set - [Erai-raws] Oresuki - Oretachi no Game Set (Whisper AI).srt",
-            "https://jimaku.cc/dl/10420",
-        )];
+    fn test_merge_unified_entries_links_counterparts() {
+        let jimaku = vec![jimaku::CachedJimakuEntry {
+            id: 451,
+            name: "Heya Camp△".to_string(),
+            english_name: Some("ROOM CAMP".to_string()),
+            japanese_name: Some("へやキャン△".to_string()),
+        }];
+        let kitsu = vec![kitsunekko::CachedKitsunekkoEntry {
+            slug: "Heya+Camp".to_string(),
+            name: "Heya Camp".to_string(),
+        }];
 
-        let filtered = SubtitleProvider::filter_subtitles(files.clone(), Some("13"));
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].title, files[0].title);
+        let mut kitsu_map: HashMap<String, String> = HashMap::new();
+        for k in &kitsu {
+            kitsu_map.insert(normalize_title(&k.name), k.slug.clone());
+        }
+
+        let mut unified = Vec::new();
+        for j in jimaku {
+            let norm_name = normalize_title(&j.name);
+            let matched_slug = kitsu_map.remove(&norm_name);
+            unified.push(UnifiedAnimeEntry {
+                name: j.name,
+                english_name: j.english_name,
+                japanese_name: j.japanese_name,
+                jimaku_id: Some(j.id),
+                kitsunekko_slug: matched_slug,
+            });
+        }
+
+        assert_eq!(unified.len(), 1);
+        assert_eq!(unified[0].jimaku_id, Some(451));
+        assert_eq!(unified[0].kitsunekko_slug.as_deref(), Some("Heya+Camp"));
+    }
+
+    #[tokio::test]
+    async fn test_live_heya_camp_fetches_both_providers() {
+        let provider = SubtitleProvider::new();
+        let entries = provider.ensure_cache().await.unwrap();
+        let heya = entries
+            .into_iter()
+            .find(|e| e.name.contains("Heya Camp"))
+            .expect("Heya Camp should be in unified index");
+
+        assert!(heya.jimaku_id.is_some(), "Should link to Jimaku ID 451");
+        assert!(
+            heya.kitsunekko_slug.is_some(),
+            "Should link to Kitsunekko slug"
+        );
+
+        let files = provider
+            .fetch_entry_files(&heya, Some("01"), true)
+            .await
+            .unwrap();
+        let has_jimaku = files.iter().any(|f| f.provider == "Jimaku.cc");
+        let has_kitsunekko = files
+            .iter()
+            .any(|f| f.provider == "Kitsunekko" && f.title.contains("SP"));
+
+        assert!(has_jimaku, "Should have Jimaku episode files");
+        assert!(has_kitsunekko, "Should have Kitsunekko SP file");
     }
 }
