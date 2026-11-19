@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{List, ListItem, Paragraph},
+    widgets::{List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
@@ -235,11 +235,30 @@ pub fn render_select_subtitle(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     render_subtitle_picker(frame, chunks[0], app);
     let right_info = build_subtitle_info(app);
-    let details = Paragraph::new(right_info).block(default_block("Release Details"));
+    let details = Paragraph::new(right_info)
+        .block(default_block("Release Details"))
+        .wrap(Wrap { trim: false });
     frame.render_widget(details, chunks[1]);
 }
 
+fn truncate_title(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let mut chars = s.chars();
+    let count = s.chars().count();
+    if count <= max_chars {
+        s.to_owned()
+    } else {
+        let truncated: String = chars.by_ref().take(max_chars.saturating_sub(1)).collect();
+        format!("{}…", truncated)
+    }
+}
+
 fn render_subtitle_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    // prefix(3) + "[XX] "(6) + "[Provider] "(~14) + 2 borders = ~25 overhead
+    let avail_title_width = (area.width as usize).saturating_sub(25);
+
     let items: Vec<ListItem> = app
         .subtitles
         .iter()
@@ -257,6 +276,7 @@ fn render_subtitle_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
             } else {
                 COLOR_KITSU
             };
+            let display_title = truncate_title(&sub.title, avail_title_width);
             Line::from(vec![
                 Span::raw(prefix),
                 Span::styled(
@@ -267,7 +287,7 @@ fn render_subtitle_picker(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     format!("[{}] ", sub.provider),
                     Style::default().fg(prov_color).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(&sub.title, style),
+                Span::styled(display_title, style),
             ])
             .into()
         })
